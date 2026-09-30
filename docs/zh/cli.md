@@ -87,6 +87,7 @@ jasna --input input_folder --output output_folder
 | 选项 | 默认值 | 说明 |
 | ------ | ------- | ----- |
 | `--vr-mode` | `auto` | `auto`、`off`、`sbs`、`sbs-fisheye`。见 [VR180](vr180.md)。 |
+| `--vr-projection` | `auto` | `auto`、`raw`、`fisheye`、`gnomonic`。显式指定会覆盖前缀规则及 `sbs-fisheye` 的默认投影；未启用 VR 处理时忽略。 |
 
 ## 编码
 

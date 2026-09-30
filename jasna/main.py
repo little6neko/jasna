@@ -73,7 +73,7 @@ def _session_config_from_args(
         rtx_denoise=str(args.rtx_denoise).lower(),
         rtx_deblur=str(args.rtx_deblur).lower(),
         vr_mode=str(args.vr_mode),
-        vr_projection="auto",
+        vr_projection=str(args.vr_projection),
         codec=codec,
         encoder_settings=encoder_settings,
         lut_path=lut_path,
@@ -473,6 +473,14 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         choices=["auto", "off", "sbs", "sbs-fisheye"],
         help=CLI_HELP["vr_mode"],
+    )
+
+    projection.add_argument(
+        "--vr-projection",
+        type=str,
+        default="auto",
+        choices=["auto", "raw", "fisheye", "gnomonic"],
+        help=CLI_HELP["vr_projection"],
     )
 
     streaming = parser.add_argument_group("Streaming")

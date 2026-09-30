@@ -87,6 +87,7 @@ Still images route here automatically; `--restoration-model-name` is video-only.
 | Option | Default | Notes |
 | ------ | ------- | ----- |
 | `--vr-mode` | `auto` | `auto`, `off`, `sbs`, `sbs-fisheye`. See [VR180](vr180.md). |
+| `--vr-projection` | `auto` | `auto`, `raw`, `fisheye`, `gnomonic`. Explicit values override studio routing and the `sbs-fisheye` default; ignored when VR processing is off. |
 
 ## Encoding
 

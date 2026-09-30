@@ -82,6 +82,7 @@ class TestBuildParser:
         assert args.temporal_overlap == 8
         assert args.enable_crossfade is True
         assert args.vr_mode == "auto"
+        assert args.vr_projection == "auto"
         assert args.denoise == "none"
         assert args.denoise_step == "after_primary"
         assert args.secondary_restoration == "none"
@@ -505,6 +506,16 @@ class TestArgForwarding:
     def test_vr_mode_forwarded(self, tmp_path):
         pipe, _ = self._capture_run(tmp_path, ["--vr-mode", "sbs-fisheye"])
         assert pipe["vr_mode"] == "sbs-fisheye"
+
+    @pytest.mark.parametrize("projection", ["auto", "raw", "fisheye", "gnomonic"])
+    def test_vr_projection_forwarded(self, tmp_path, projection):
+        pipe, _ = self._capture_run(tmp_path, ["--vr-mode", "sbs", "--vr-projection", projection])
+        assert pipe["vr_projection"] == projection
+
+    @pytest.mark.parametrize("extra", [["--vr-projection"], ["--vr-projection", ""], ["--vr-projection", "invalid"]])
+    def test_invalid_vr_projection_rejected(self, extra):
+        with pytest.raises(SystemExit):
+            build_parser().parse_args(extra)
 
     def test_no_progress_forwarded(self, tmp_path):
         pipe, _ = self._capture_run(tmp_path, ["--no-progress"])

@@ -41,8 +41,13 @@ CLI_HELP: dict[str, str] = {
         "VR180 SBS handling: auto uses conservative studio/metadata detection and "
         "routes each mosaic region's restoration projection (raw/fisheye/gnomonic) "
         "by studio; sbs forces per-eye SBS with the same studio routing; sbs-fisheye "
-        "forces fisheye conditioning for every region. Detection, tracking, and "
+        "defaults to fisheye conditioning unless --vr-projection overrides it. Detection, tracking, and "
         "blending stay in source coordinates. (default: %(default)s)"
+    ),
+    "vr_projection": (
+        "Restoration-region projection: auto follows studio routing and --vr-mode; "
+        "raw, fisheye, or gnomonic explicitly override that selection. "
+        "Ignored when VR handling is off. (default: %(default)s)"
     ),
     "tvai_ffmpeg_path": "Path to Topaz Video ffmpeg.exe (default: %(default)s)",
     "tvai_model": 'Topaz model name for tvai_up (e.g. "iris-2", "prob-4", "iris-3") (default: %(default)s)',
