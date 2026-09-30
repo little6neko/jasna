@@ -16,6 +16,7 @@ from jasna.accelerator import AcceleratorVendor, vendor_for_device
 from jasna.media.container_utils import MOV_SUFFIXES
 from jasna.media.probe import UnsupportedColorspaceError, get_video_meta_data
 from jasna.media.video_encoder import VideoEncoder
+from jasna.media.encoder_settings import is_software_codec
 from jasna.media.frame_rate import resolve_frame_rate_retarget
 from jasna.media.splice import (
     KeyframeIndex,
@@ -69,10 +70,12 @@ class _OfflineFrameWriter:
     def after_write(self, frames_written: int) -> None:
         pass
 
-    def close(self) -> None:
+    def close(self, error: BaseException | None = None) -> None:
         if self._entered:
-            self._encoder_ctx.__exit__(None, None, None)
-            self._entered = False
+            try:
+                self._encoder_ctx.__exit__(type(error) if error is not None else None, error, None)
+            finally:
+                self._entered = False
 
 
 class Pipeline:
@@ -174,6 +177,7 @@ class Pipeline:
 
         encode_heartbeat: list[float] = [time.monotonic()]
         frame_writer = _OfflineFrameWriter(encoder_ctx, encode_heartbeat)
+        error = None
         try:
             error = run_restoration_pass(
                 self,
@@ -192,8 +196,11 @@ class Pipeline:
                 progress=progress,
                 encode_heartbeat=encode_heartbeat,
             )
+        except BaseException as exc:
+            error = exc
+            raise
         finally:
-            frame_writer.close()
+            frame_writer.close(error)
 
         free, total = torch.cuda.mem_get_info(self.device)
         log.info("VRAM usage at end — %.1f MiB", (total - free) / (1024 ** 2))
@@ -248,7 +255,11 @@ class Pipeline:
                 "Fragmented MP4 has no effect on %s output; it is already playable while it grows",
                 self.output_video.suffix,
             )
-        return VideoEncoder(
+        encoder_type = VideoEncoder
+        if is_software_codec(self.codec):
+            from jasna.media.software_video import CpuVideoEncoder
+            encoder_type = CpuVideoEncoder
+        return encoder_type(
             str(self.output_video),
             device=self.device,
             metadata=metadata,

@@ -92,15 +92,30 @@ Still images route here automatically; `--restoration-model-name` is video-only.
 
 | Option | Default | Notes |
 | ------ | ------- | ----- |
-| `--codec` | `hevc` | `hevc`, `h264`, or `av1` for offline output. HLS streaming always uses H.264. |
-| `--cq` | GPU/codec-specific | Literal encoder quality target. Lower is better quality and a larger file. NVIDIA defaults: H.264 25, HEVC 28, AV1 35. AMD defaults: H.264 24, HEVC 25, AV1 32. |
-| `--encoder-settings` | — | Advanced settings as a JSON object or comma-separated `key=value` pairs, e.g. `{"rc-lookahead":32}` or `rc-lookahead=32,bf=4`. See below. |
+| `--codec` | `hevc` | `hevc`, `h264`, and `av1` use GPU output. Software video encoder names from PyAV's FFmpeg (e.g. `libx265`, `libx264`, `ffv1`, `prores_ks`) select CPU encoding while decoding and blending remain on the GPU. |
+| `--cq` | GPU/codec-specific | GPU encoder quality target; ignored for software encoders. Lower is better quality and a larger file. NVIDIA defaults: H.264 25, HEVC 28, AV1 35. AMD defaults: H.264 24, HEVC 25, AV1 32. |
+| `--encoder-settings` | — | JSON, comma-separated `key=value` pairs, or quoted option/value pairs such as `"-preset medium -crf 22"`. See below. |
 | `--lut` | — | `.cube` color LUT (1D or 3D) applied on GPU before encoding. Also available in the GUI's Encoding section. |
 | `--sharpen` | `0` | Sharpen the picture before encoding, from `0` (off) to `1` (strongest). Matches ffmpeg's `cas` filter, so no second pass is needed. See [Advanced processing](advanced_processing.md). |
 | `--retarget-high-fps` | off | 60 → 30 FPS (and 59.94 → 29.97) by processing every second frame. Other rates unchanged; audio timing preserved. |
 | `--fmp4` | off | Play `.mp4`/`.mov` output while it is still being made; it also survives an interrupted job. Not available with `--stream` or `--segments`. See [Advanced processing](advanced_processing.md). |
 | `--segments` | — | Restore only selected ranges, e.g. `10-25,01:10-01:30.5`. Cannot be combined with `--stream`, `--retarget-high-fps`, or `--fmp4`. See [Segments](segments.md). |
 | `--working-directory` | output dir | Where segment temp files are written. See [Segments](segments.md). |
+
+### CPU software output
+
+```bash
+JASNA_DECODE_BACKEND=pyav-hw jasna --input input.mp4 --output output.mp4 \
+  --device cuda:0 --detection-model rfdetr-vr-v1 --vr-mode auto \
+  --batch-size 1 --max-clip-size 300 --codec libx265 \
+  --encoder-settings "-preset medium -crf 22"
+```
+
+`--cq` is ignored for software output. Options go to PyAV's FFmpeg codec library, not a shell command: input/output paths, `-i`, `-map` and filters are managed by Jasna. JSON and `preset=medium,crf=22` also work. libx264/libx265 default to medium/CRF22; other encoders retain their own defaults. Available encoders depend on the FFmpeg linked to PyAV, which can differ from the system `ffmpeg`. Unsupported encoder/container, option and pixel-format combinations fail explicitly.
+
+The default pixel format preserves source bit depth where supported; override with e.g. `-pix_fmt yuv420p10le`. Audio, subtitles and metadata use the existing muxing path. Software encoder selection is independent of the restoration model for full offline video exports. Streaming, smart segments, LUTs and sharpening are not supported with software output. Each restoration model retains its own input restrictions (for example, LTX does not support VR180 SBS).
+
+Detection, restoration, second-pass decoding, VR projection and blending keep the GPU pipeline. Crops, restored frames and masks stay on the GPU by default, with the existing VRAM offloader handling pressure. For YUV420 8/10-bit software encoder input, color conversion runs on the GPU followed by one download to CPU encoding. Other pixel formats download RGB once at the encoder boundary and use FFmpeg to adapt it to the codec. Software encoding is synchronous and uses the original queue backpressure, without NVENC or its buffers. It trades CPU time and RAM for lower VRAM use; peaks still depend on video content.
 
 ### Choosing a codec
 

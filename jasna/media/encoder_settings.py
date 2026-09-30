@@ -4,9 +4,29 @@ from __future__ import annotations
 
 import json
 import math
+import shlex
 from dataclasses import dataclass
 
 from jasna.accelerator import AcceleratorVendor
+
+GPU_CODECS = frozenset({"h264", "hevc", "av1"})
+
+
+def is_software_codec(codec: str) -> bool:
+    return codec not in GPU_CODECS
+
+
+def software_codec(codec: str):
+    """Resolve against the linked FFmpeg, not the system ffmpeg executable."""
+    import av
+    try:
+        descriptor = av.Codec(codec, "w")
+    except ValueError as exc:
+        raise ValueError(f"Unsupported codec: {codec} (not available in PyAV's FFmpeg)") from exc
+    hardware = av.codec.Capabilities.hardware.value | av.codec.Capabilities.hybrid.value
+    if descriptor.type != "video" or descriptor.capabilities & hardware:
+        raise ValueError(f"{codec} is not a software video encoder; use h264/hevc/av1 for GPU output")
+    return descriptor
 
 
 @dataclass(frozen=True)
@@ -167,6 +187,20 @@ def parse_encoder_settings(value: str) -> dict[str, object]:
             raise ValueError("--encoder-settings JSON must be an object")
         return parsed
 
+    if value.startswith("-"):
+        tokens = shlex.split(value)
+        if len(tokens) % 2:
+            raise ValueError("--encoder-settings requires option/value pairs, e.g. -preset medium -crf 22")
+        settings = {}
+        for key, val in zip(tokens[::2], tokens[1::2]):
+            if not key.startswith("-") or key == "-":
+                raise ValueError(f"Invalid encoder option: {key!r}")
+            key = key.lstrip("-")
+            if key in settings:
+                raise ValueError(f"Duplicate encoder option: {key}")
+            settings[key] = _parse_encoder_setting_scalar(val)
+        return settings
+
     settings: dict[str, object] = {}
     for part in value.split(","):
         part = part.strip()
@@ -189,6 +223,24 @@ def validate_encoder_settings(
     codec: str,
     vendor: AcceleratorVendor | str,
 ) -> dict[str, object]:
+    if is_software_codec(codec):
+        software_codec(codec)
+        normalized = {}
+        for key, value in settings.items():
+            if not isinstance(key, str) or not isinstance(value, (str, int, float, bool)):
+                raise ValueError("Software encoder options must have scalar values")
+            name = key.removesuffix(":v:0").removesuffix(":v")
+            if name in normalized:
+                raise ValueError(f"Duplicate encoder option: {name}")
+            normalized[name] = value
+        settings = normalized
+        # These are codec options, not an arbitrary ffmpeg command. PyAV
+        # validates codec-specific options when opening the encoder.
+        forbidden = {"i", "y", "n", "map", "vf", "af", "filter_complex", "c", "c:v", "codec", "f", "s", "r", "hwaccel", "cq"}
+        invalid = sorted(set(settings) & forbidden)
+        if invalid:
+            raise ValueError("Not software encoder options: " + ", ".join(invalid))
+        return settings
     by_codec = (
         AMF_SUPPORTED_ENCODER_SETTINGS_BY_CODEC
         if AcceleratorVendor(str(vendor)) is AcceleratorVendor.AMD

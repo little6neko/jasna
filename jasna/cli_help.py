@@ -53,13 +53,13 @@ CLI_HELP: dict[str, str] = {
     "max_detection_gap": "Fill detection dropouts up to N frames when the mosaic reappears at the same spot. 0 disables (default: %(default)s)",
     "min_detection_duration": "Drop detections shorter than N frames as false positives. 0 disables (default: %(default)s)",
     "scene_detection": "Detect hard scene cuts and end all tracked mosaic clips at the cut, so no clip spans two different shots. (default: %(default)s)",
-    "codec": "Offline output video codec (HLS streaming always uses H.264). Default: %(default)s",
+    "codec": "Offline codec: hevc/h264/av1 use GPU output; FFmpeg software encoder names (e.g. libx265, libx264, ffv1) use CPU encoding after GPU decode and blending. Default: %(default)s",
     "cq": (
         "Literal encoder quality target passed unchanged. Lower values improve "
         "quality and increase file size. NVIDIA defaults: H.264 25, HEVC 28, "
-        "AV1 35; AMD defaults: H.264 24, HEVC 25, AV1 32."
+        "AV1 35; AMD defaults: H.264 24, HEVC 25, AV1 32. Ignored for software encoders."
     ),
-    "encoder_settings": 'Advanced encoder settings, as a JSON object or comma-separated key=value pairs (e.g. {"rc-lookahead":32} or rc-lookahead=32,bf=4)',
+    "encoder_settings": 'Encoder options as JSON, key=value pairs, or quoted option/value pairs (e.g. "-preset medium -crf 22"). libx264/libx265 default to medium/CRF22; other software encoders use their own defaults.',
     "post_export_action": "Action to run after all non-streaming exports finish.",
     "post_export_video_command": (
         "Shell command to run after each successful video export. Supports "

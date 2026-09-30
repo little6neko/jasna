@@ -767,6 +767,10 @@ def run_restoration_pass(
         thread.start()
 
     while any(thread.is_alive() for thread in threads):
+        if error_holder:
+            # Cancel before joining producers blocked behind a failed consumer.
+            cancel_event.set()
+            break
         if poll is not None and poll():
             cancel_event.set()
         if cancel_event.wait(0.05):

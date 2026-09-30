@@ -92,15 +92,30 @@ jasna --input input_folder --output output_folder
 
 | 选项 | 默认值 | 说明 |
 | ------ | ------- | ----- |
-| `--codec` | `hevc` | 离线输出可选 `hevc`、`h264` 或 `av1`。HLS 流媒体始终使用 H.264。 |
-| `--cq` | 根据 GPU/编解码器 | 原样传给编码器的质量目标。越低质量越好、文件越大。NVIDIA 默认值：H.264 25、HEVC 28、AV1 35；AMD 默认值：H.264 24、HEVC 25、AV1 32。 |
-| `--encoder-settings` | — | JSON 对象或逗号分隔的高级 `key=value` 设置，例如 `{"rc-lookahead":32}` 或 `rc-lookahead=32,bf=4`。见下文。 |
+| `--codec` | `hevc` | `hevc`、`h264`、`av1` 使用 GPU 输出；也接受 PyAV 所链接 FFmpeg 提供的软件视频编码器名称，如 `libx265`、`libx264`、`ffv1`、`prores_ks`。软件模式仅将最终编码放在 CPU，解码和混合仍在 GPU。 |
+| `--cq` | 根据 GPU/编解码器 | GPU 编码器质量目标，软件编码器忽略此参数。越低质量越好、文件越大。NVIDIA 默认值：H.264 25、HEVC 28、AV1 35；AMD 默认值：H.264 24、HEVC 25、AV1 32。 |
+| `--encoder-settings` | — | JSON 对象、逗号分隔的 `key=value`，或带引号的选项/值对，例如 `"-preset medium -crf 22"`。见下文。 |
 | `--lut` | — | `.cube` 色彩 LUT（1D 或 3D），编码前由 GPU 应用。也可在 GUI 的编码设置部分设置。 |
 | `--sharpen` | `0` | 编码前锐化画面，取值 `0`（关闭）到 `1`（最强）。与 ffmpeg 的 `cas` 滤镜一致，无需二次转码。见[高级处理](advanced_processing.md)。 |
 | `--retarget-high-fps` | 关闭 | 通过每两帧处理一帧实现 60 → 30 FPS（以及 59.94 → 29.97）。其他帧率不变；音频时序保持不变。 |
 | `--fmp4` | 关闭 | `.mp4`/`.mov` 输出在生成过程中即可播放，任务中断后仍可播放。不能与 `--stream` 或 `--segments` 同时使用。见[高级处理](advanced_processing.md)。 |
 | `--segments` | — | 只修复选定区间，例如 `10-25,01:10-01:30.5`。不能与 `--stream`、`--retarget-high-fps` 或 `--fmp4` 同时使用。见[区间](segments.md)。 |
 | `--working-directory` | 输出目录 | 区间临时文件的写入位置。见[区间](segments.md)。 |
+
+### CPU 软件输出
+
+```bash
+JASNA_DECODE_BACKEND=pyav-hw jasna --input input.mp4 --output output.mp4 \
+  --device cuda:0 --detection-model rfdetr-vr-v1 --vr-mode auto \
+  --batch-size 1 --max-clip-size 300 --codec libx265 \
+  --encoder-settings "-preset medium -crf 22"
+```
+
+软件输出时 `--cq` 被忽略。编码参数交给 PyAV 的 FFmpeg 编码库，不能在这里传 `-i`、`-map`、滤镜或输出路径。也支持 `preset=medium,crf=22` 和 JSON。`libx264`/`libx265` 默认 medium/CRF22，其他编码器使用自身默认值。可用编码器取决于 PyAV 链接的 FFmpeg，不一定与系统 `ffmpeg` 命令一致；编码器、容器、参数或像素格式不兼容时会报错。
+
+默认尽量保留源位深并选择编码器支持的像素格式，可用 `-pix_fmt yuv420p10le` 显式指定。音频、字幕和元数据沿用已有封装逻辑。完整离线视频输出的软件编码器选择与修复模型独立，不支持与流媒体、分段智能渲染、LUT 或锐化组合。各修复模型自身的输入限制仍适用，例如 LTX 不支持 VR180 左右分屏。
+
+检测、修复、二次解码、VR 投影和混合沿用 GPU 流水线；crop、修复结果和 mask 默认留在 GPU，显存压力大时由原有 offloader 处理。软件编码器的 YUV420 8/10-bit 输入在 GPU 完成颜色转换，再一次性下载到 CPU 编码。其他像素格式在最终编码入口下载一次 RGB，由 FFmpeg 适配为编码器要求的格式。软件编码同步执行，沿用原有队列背压；不创建 NVENC 编码器或其缓冲。相比 GPU 编码会增加 CPU 和 RAM 使用、降低速度，显存峰值仍随视频内容变化。
 
 ### 选择编解码器
 

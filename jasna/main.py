@@ -101,9 +101,14 @@ def _resolve_cli_encoder_settings(
     from jasna.accelerator import AcceleratorVendor
     from jasna.media.encoder_settings import parse_encoder_settings, validate_encoder_settings
     from jasna.media.encoder_settings import encoder_cq_spec, validate_encoder_cq
+    from jasna.media.encoder_settings import is_software_codec
 
     resolved_vendor = AcceleratorVendor(str(vendor))
     settings = parse_encoder_settings(raw_settings)
+    if is_software_codec(codec):
+        if cq is not None:
+            logging.getLogger(__name__).warning("--cq is ignored for %s; use --encoder-settings for quality", codec)
+        return validate_encoder_settings(settings, codec=codec, vendor=resolved_vendor)
     cq_aliases = {"cq"}
     if resolved_vendor is AcceleratorVendor.AMD:
         cq_aliases.add("qvbr_quality_level")
@@ -148,6 +153,17 @@ def _resolve_cli_encoder_settings(
         codec=codec,
         vendor=resolved_vendor,
     )
+
+
+def _parse_codec(value: str) -> str:
+    from jasna.media.encoder_settings import is_software_codec, software_codec
+    codec = str(value).lower()
+    if is_software_codec(codec):
+        try:
+            software_codec(codec)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+    return codec
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -486,9 +502,8 @@ def build_parser() -> argparse.ArgumentParser:
     encoding = parser.add_argument_group("Encoding")
     encoding.add_argument(
         "--codec",
-        type=lambda value: str(value).lower(),
+        type=_parse_codec,
         default="hevc",
-        choices=["hevc", "h264", "av1"],
         help=CLI_HELP["codec"],
     )
     encoding.add_argument(
@@ -621,6 +636,9 @@ def _configure_runtime(args: argparse.Namespace) -> None:
 
     from jasna._suppress_noise import install as _install_noise_filters
     _install_noise_filters()
+    # PyAV uses FFmpeg levels, whose numeric values differ from Python logging.
+    import av
+    av.logging.set_level(getattr(av.logging, args.log_level.upper()))
 
     from jasna._frozen import patch_frozen_torch
     patch_frozen_torch()
@@ -923,6 +941,12 @@ def main() -> None:
     segments = None
     splice_plan = None
     codec = str(args.codec).lower()
+    from jasna.media.encoder_settings import is_software_codec
+    if is_software_codec(codec):
+        if is_streaming or segments_spec:
+            parser.error("Software codecs currently support full offline output, not --stream or --segments")
+        if args.lut or args.sharpen:
+            parser.error("Software output currently does not support --lut or --sharpen")
     if segments_spec:
         codec, segments, splice_plan = _resolve_segments(
             parser, args, input_video, output_video, codec_was_explicit=codec_was_explicit

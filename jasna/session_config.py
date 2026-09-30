@@ -23,7 +23,7 @@ VrModeName = Literal["auto", "off", "sbs", "sbs-fisheye"]
 VrProjectionName = Literal["auto", "raw", "fisheye", "gnomonic"]
 RtxQualityName = Literal["low", "medium", "high", "ultra"]
 RtxLevelName = Literal["none", "low", "medium", "high", "ultra"]
-CodecName = Literal["hevc", "h264", "av1"]
+CodecName = str  # GPU aliases or a software video encoder provided by FFmpeg.
 
 
 @dataclass(frozen=True)

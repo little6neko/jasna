@@ -45,6 +45,22 @@ def _run_main_with_args(tmp_path, extra_args, *, create_input=True, create_detec
 
 
 class TestMainValidation:
+    @pytest.mark.parametrize("model", ["basicvsrpp", "ltx", "ltx-undistilled"])
+    def test_software_encoding_independent_of_restoration_model(self, tmp_path, model):
+        with (
+            patch("jasna.accelerator.is_nvidia_device", return_value=True),
+            patch("jasna.ltx.model_files.LtxModelFiles.from_dir", return_value=MagicMock()),
+            patch("jasna.ltx.model_files.missing_downloads", return_value=[]),
+        ):
+            pipeline_cls = _run_main_with_args(
+                tmp_path, ["--codec", "libx265", "--restoration-model-name", model]
+            )
+        config = pipeline_cls.call_args.kwargs["config"]
+        assert config.codec == "libx265"
+        assert config.restoration_model_name == ("basicvsrpp" if model == "basicvsrpp" else "ltx")
+        if model != "basicvsrpp":
+            assert config.ltx_model == ("undistilled" if model == "ltx-undistilled" else "distilled")
+
     def test_segments_auto_select_source_codec_and_reach_pipeline(self, tmp_path):
         metadata = MagicMock(codec_name="h264", duration=10.0)
         splice_plan = MagicMock()
@@ -113,7 +129,7 @@ class TestMainValidation:
 
     def test_bad_codec_rejected_by_argparse(self, tmp_path):
         with pytest.raises(SystemExit):
-            _run_main_with_args(tmp_path, ["--codec", "vp9"])
+            _run_main_with_args(tmp_path, ["--codec", "not_a_real_encoder"])
 
     def test_h264_and_av1_codecs_accepted(self, tmp_path):
         _run_main_with_args(tmp_path, ["--codec", "h264"])
