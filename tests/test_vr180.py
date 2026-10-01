@@ -1,3 +1,4 @@
+import json
 from fractions import Fraction
 from pathlib import Path
 
@@ -5,13 +6,11 @@ import numpy as np
 import pytest
 import torch
 
+import jasna.vr180 as vr180
 from jasna.media.probe import VideoMetadata
 from jasna.mosaic.detections import Detections
 from jasna.vr180 import (
-    DIRECT_STUDIO_TOKENS,
-    FISHEYE_STUDIO_TOKENS,
     PROJECTION_CHOICES,
-    STUDIO_PROJECTION,
     SbsDetectionAdapter,
     resolve_projection,
     resolve_vr_mode,
@@ -47,36 +46,55 @@ def _metadata(
     )
 
 
-@pytest.mark.parametrize("token", sorted(FISHEYE_STUDIO_TOKENS))
-def test_auto_resolves_known_fisheye_studios(token: str) -> None:
-    result = resolve_vr_mode("auto", _metadata(), Path(f"{token}-001.mp4"))
-    assert result.resolved == "sbs"
-    assert result.projection == "fisheye"
-    assert token in result.reason
+@pytest.fixture(autouse=True)
+def projection_config(tmp_path, monkeypatch):
+    config = tmp_path / "vr-projections.json"
+    config.write_text(json.dumps({
+        "SIVR": "raw", "PRVRSS": "fisheye", "DSVR": "fisheye",
+        "FSVSS": "fisheye", "VRPRD": "gnomonic",
+    }))
+    monkeypatch.setattr(vr180, "VR_PROJECTIONS_PATH", config)
+    return config
 
 
-@pytest.mark.parametrize("token", sorted(DIRECT_STUDIO_TOKENS))
-def test_auto_resolves_known_direct_sbs_studios(token: str) -> None:
-    result = resolve_vr_mode("auto", _metadata(), Path(f"{token}-001.mp4"))
-    assert result.resolved == "sbs"
-    assert token in result.reason
+@pytest.mark.parametrize(("prefix", "kind"), [
+    ("SIVR", "raw"), ("PRVRSS", "fisheye"), ("DSVR", "fisheye"),
+    ("FSVSS", "fisheye"), ("VRPRD", "gnomonic"),
+])
+def test_auto_uses_configured_prefix(prefix, kind):
+    for name in [f"{prefix}-001.mp4", f"{prefix.lower()}00123.mp4",
+                 f"[98T.TV]{prefix}-001.mp4"]:
+        result = resolve_vr_mode("auto", _metadata(width=1920, height=960), Path(name))
+        assert result.is_sbs
+        assert result.projection == kind
+        assert prefix.upper() in result.reason
 
 
-def test_auto_fisheye_studio_overrides_direct_token() -> None:
-    result = resolve_vr_mode("auto", _metadata(), Path("VRKM-FSVSS-001.mp4"))
-    assert result.resolved == "sbs"
-    assert result.projection == "fisheye"
+def test_prefix_does_not_match_in_middle():
+    result = resolve_vr_mode("auto", _metadata(), Path("other-FSVSS-001.mp4"))
+    assert result.reason == "2:1 frame above 1080p"
+    assert result.projection == "raw"
 
 
-def test_auto_matches_studio_code_glued_to_number() -> None:
-    # Real 8K releases glue the studio code to the number (savr00327-2);
-    # detection is a substring match, not a separator-bounded token.
-    savr = resolve_vr_mode("auto", _metadata(), Path("savr00327-2.mp4"))
-    assert savr.resolved == "sbs"
-    assert savr.projection == "fisheye"
-    mdvr = resolve_vr_mode("auto", _metadata(), Path("mdvr00271-2.mp4"))
-    assert mdvr.resolved == "sbs"
-    assert mdvr.projection == "raw"
+def test_config_changes_take_effect_without_restart(projection_config):
+    projection_config.write_text('{"CUSTOM": "gnomonic", "CUSTOMLONG": "fisheye"}')
+    assert resolve_projection(Path("custom-001.mp4")) == "gnomonic"
+    assert resolve_projection(Path("customlong-001.mp4")) == "fisheye"
+    assert resolve_projection(Path("DSVR-001.mp4")) == "raw"
+
+
+@pytest.mark.parametrize("content", ['[]', '{"BAD": "invalid"}', '{"": "raw"}',
+                                     '{"X": "raw", "x": "fisheye"}'])
+def test_invalid_config_is_reported(projection_config, content):
+    projection_config.write_text(content)
+    with pytest.raises(ValueError, match="vr-projections.json"):
+        resolve_projection(Path("movie.mp4"))
+
+
+def test_explicit_projection_does_not_need_config(projection_config):
+    projection_config.unlink()
+    assert resolve_vr_mode("sbs", _metadata(), Path("DSVR.mp4"),
+                           projection="raw").projection == "raw"
 
 
 def test_auto_uses_spatial_metadata_for_sbs() -> None:
@@ -143,7 +161,7 @@ def test_projection_override_applies_to_detected_vr(projection: str) -> None:
     result = resolve_vr_mode(
         "auto",
         _metadata(),
-        Path("pxvr-001.mp4"),
+        Path("DSVR-001.mp4"),
         projection=projection,
     )
 
@@ -163,28 +181,17 @@ def test_projection_override_does_not_enable_vr_layout() -> None:
     assert result.projection == "none"
 
 
-@pytest.mark.parametrize(("code", "kind"), sorted(STUDIO_PROJECTION.items()))
-def test_resolve_projection_routes_confident_studios(code: str, kind: str) -> None:
-    assert resolve_projection(Path(f"{code}-001.mp4")) == kind
-    assert resolve_projection(Path(f"{code.lower()}00123-4.mp4")) == kind
-
-
-def test_resolve_projection_falls_back_to_raw_for_unknown_studio() -> None:
-    assert resolve_projection(Path("unknownvr-001.mp4")) == "raw"
-    # Direct-SBS token with no routing entry stays raw (its studio prior).
-    assert resolve_projection(Path("mdvr00271-2.mp4")) == "raw"
-
-
-def test_resolve_projection_fisheye_token_without_table_entry() -> None:
-    # SAVR/URVRSP are fisheye-shot but absent from the confident table;
-    # the fisheye-token prior still routes them to fisheye.
-    assert resolve_projection(Path("savr00327-2.mp4")) == "fisheye"
-    assert resolve_projection(Path("urvrsp00285-3.mp4")) == "fisheye"
+@pytest.mark.parametrize("prefix", ["SAVR", "URVRSP", "PXVR", "S1VR", "MDVR", "VRKM",
+                                   "IPVR", "ATVR", "CJVR", "KAVR", "NHVR", "TMAVR", "gnomonic", "CRVR"])
+def test_removed_prefixes_use_auto_fallback(prefix):
+    assert resolve_projection(Path(f"{prefix}-001.mp4")) == "raw"
+    result = resolve_vr_mode("auto", _metadata(width=1920, height=960), Path(f"{prefix}-001.mp4"))
+    assert result.resolved == "off"
 
 
 def test_resolve_projection_explicit_override_wins() -> None:
     assert resolve_projection(Path("ipvr-001.mp4"), requested="gnomonic") == "gnomonic"
-    assert resolve_projection(Path("pxvr-001.mp4"), requested="raw") == "raw"
+    assert resolve_projection(Path("DSVR-001.mp4"), requested="raw") == "raw"
 
 
 def test_resolve_projection_rejects_unknown_override() -> None:

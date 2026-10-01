@@ -139,6 +139,7 @@ class Pipeline:
             metadata,
             self.input_video,
             projection=self.vr_projection,
+            announce=self.progress_callback is None,
         )
         self.job_detection_model = (
             SbsDetectionAdapter(self.detection_model)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from dataclasses import dataclass
@@ -14,24 +15,13 @@ from jasna.mosaic.detections import Detections
 log = logging.getLogger(__name__)
 
 VR_MODES = ("auto", "off", "sbs", "sbs-fisheye")
-FISHEYE_STUDIO_TOKENS = frozenset({"FSVSS", "SAVR", "URVRSP", "CRVR", "PXVR"})
-DIRECT_STUDIO_TOKENS = frozenset({"S1VR", "MDVR", "VRKM", "IPVR"})
 PROJECTION_KINDS = ("raw", "fisheye", "gnomonic")
 PROJECTION_CHOICES = ("auto", *PROJECTION_KINDS)
 _SBS_ASPECT_MIN = 1.90
 _SBS_ASPECT_MAX = 2.10
 _AUTO_SBS_MIN_HEIGHT = 1080
 
-STUDIO_PROJECTION: dict[str, str] = {
-    "ATVR": "raw",
-    "CJVR": "raw",
-    "IPVR": "raw",
-    "KAVR": "raw",
-    "NHVR": "fisheye",
-    "PXVR": "fisheye",
-    "TMAVR": "fisheye",
-    "VRPRD": "gnomonic",
-}
+VR_PROJECTIONS_PATH = Path(__file__).resolve().parent.parent / "vr-projections.json"
 
 
 @dataclass(frozen=True)
@@ -47,17 +37,24 @@ class VrModeResolution:
         return self.resolved == "sbs"
 
 
-def _studio_matches(path: Path, codes: frozenset[str]) -> list[str]:
-    # Substring match: real releases glue the studio code to the number
-    # (e.g. ``savr00327``), which a token split on separators would miss.
-    stem = path.stem.upper()
-    return sorted(code for code in codes if code in stem)
-
-
-def studio_code(name: str) -> str:
-    stem = re.sub(r"^\[[^\]]*\]\s*", "", name).upper()
-    m = re.match(r"^([0-9]?[A-Z]{2,7})", stem)
-    return m.group(1) if m else ""
+def _match_projection(input_path: Path) -> tuple[str, str] | None:
+    with VR_PROJECTIONS_PATH.open(encoding="utf-8") as f:
+        mappings = json.load(f)
+    if not isinstance(mappings, dict):
+        raise ValueError(f"{VR_PROJECTIONS_PATH}: expected a prefix-to-projection object")
+    normalized = {}
+    for prefix, kind in mappings.items():
+        if not prefix.strip() or kind not in PROJECTION_KINDS:
+            raise ValueError(f"{VR_PROJECTIONS_PATH}: invalid projection entry {prefix!r}: {kind!r}")
+        key = prefix.strip().upper()
+        if key in normalized:
+            raise ValueError(f"{VR_PROJECTIONS_PATH}: duplicate prefix {prefix!r}")
+        normalized[key] = kind
+    stem = re.sub(r"^\[[^\]]*\]\s*", "", input_path.stem).upper()
+    for prefix in sorted(normalized, key=len, reverse=True):
+        if stem.startswith(prefix):
+            return prefix, normalized[prefix]
+    return None
 
 
 def _normalize_projection(value: str) -> str:
@@ -74,12 +71,8 @@ def resolve_projection(input_path: Path, requested: str = "auto") -> str:
     projection = _normalize_projection(requested)
     if projection != "auto":
         return projection
-    routed = STUDIO_PROJECTION.get(studio_code(input_path.stem))
-    if routed:
-        return routed
-    if _studio_matches(input_path, FISHEYE_STUDIO_TOKENS):
-        return "fisheye"
-    return "raw"
+    match = _match_projection(input_path)
+    return match[1] if match else "raw"
 
 
 def _display_aspect(metadata) -> float:
@@ -110,6 +103,7 @@ def resolve_vr_mode(
     input_path: Path,
     *,
     projection: str = "auto",
+    announce: bool = False,
 ) -> VrModeResolution:
     requested = str(requested).strip().lower()
     if requested not in VR_MODES:
@@ -118,6 +112,8 @@ def resolve_vr_mode(
         )
     projection = _normalize_projection(projection)
 
+    match = None
+    prefix_checked = False
     width = int(metadata.video_width)
     height = int(metadata.video_height)
     aspect = _display_aspect(metadata)
@@ -142,15 +138,10 @@ def resolve_vr_mode(
     ):
         resolved, reason = "off", f"display aspect {aspect:.3f} is outside the SBS gate"
     else:
-        fisheye_matches = _studio_matches(input_path, FISHEYE_STUDIO_TOKENS)
-        direct_matches = _studio_matches(input_path, DIRECT_STUDIO_TOKENS)
-        routed_code = studio_code(input_path.stem)
-        if fisheye_matches:
-            resolved, reason = "sbs", f"known fisheye-remap studio token {fisheye_matches[0]}"
-        elif direct_matches:
-            resolved, reason = "sbs", f"known direct-SBS studio token {direct_matches[0]}"
-        elif routed_code in STUDIO_PROJECTION:
-            resolved, reason = "sbs", f"routed VR studio {routed_code}"
+        match = _match_projection(input_path)
+        prefix_checked = True
+        if match:
+            resolved, reason = "sbs", f"configured VR prefix {match[0]}"
         elif _has_sbs_spatial_metadata(metadata):
             resolved, reason = "sbs", "side-by-side equirectangular spatial metadata"
         elif is_high_resolution_2_to_1:
@@ -160,12 +151,19 @@ def resolve_vr_mode(
 
     if resolved != "sbs":
         resolved_projection = "none"
+        projection_source = "VR disabled"
     elif projection != "auto":
         resolved_projection = projection
+        projection_source = "explicit --vr-projection"
     elif requested == "sbs-fisheye":
         resolved_projection = "fisheye"
+        projection_source = "--vr-mode sbs-fisheye"
     else:
-        resolved_projection = resolve_projection(input_path)
+        if not prefix_checked:
+            match = _match_projection(input_path)
+            prefix_checked = True
+        resolved_projection = match[1] if match else "raw"
+        projection_source = "prefix mapping" if match else "auto fallback"
 
     result = VrModeResolution(
         requested,
@@ -174,11 +172,26 @@ def resolve_vr_mode(
         aspect,
         resolved_projection,
     )
-    message = (
-        "VR mode: requested=%s resolved=%s projection=%s reason=%s"
-        % (result.requested, result.resolved, result.projection, result.reason)
-    )
+    if resolved != "sbs":
+        message = f"[VR: off] {reason}"
+    elif projection_source == "prefix mapping":
+        message = f"[VR: SBS] prefix={match[0]} -> projection={result.projection}"
+    elif projection_source == "auto fallback":
+        message = f"[VR: SBS] no matching prefix -> projection={result.projection} (auto)"
+    else:
+        prefix_info = (
+            f"prefix={match[0]} ({match[1]}) -> "
+            if match else "no matching prefix -> " if prefix_checked else ""
+        )
+        message = (
+            f"[VR: SBS] {prefix_info}projection={result.projection} "
+            f"({projection_source})"
+        )
     if "unusual SBS" in result.reason:
+        message += f"; {result.reason}"
+    if announce:
+        print(message, flush=True)
+    elif "unusual SBS" in result.reason:
         log.warning(message)
     else:
         log.info(message)
